@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.functional as F
-from CausalSelfAttention import CausalSelfAttention
-from MLP import MLP
+from .causal_self_attention import CausalSelfAttention
+from .mlp import MLP
 
 class Block(nn.Module):
     def __init__(self, config):
