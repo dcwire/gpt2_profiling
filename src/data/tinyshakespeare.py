@@ -21,8 +21,10 @@ def load_tinyshakespeare():
     train_ids_np = np.array(train_ids, dtype=np.uint16)
     val_ids_np = np.array(val_ids, dtype=np.uint16)
 
-    train_ids_np.tofile(os.path.join(path, "train_000.bin"))
-    val_ids_np.tofile(os.path.join(path, "val_000.bin"))
+    np.save(os.path.join(path, "train_000.bin"), train_ids_np)
+    np.save(os.path.join(path, "val_000.bin"), val_ids_np)
+    # train_ids_np.tofile(os.path.join(path, "train_000.bin"))
+    # val_ids_np.tofile(os.path.join(path, "val_000.bin"))
     
     return True
 

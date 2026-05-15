@@ -2,21 +2,25 @@ import tiktoken
 import numpy as np
 import torch
 import os
+import pathlib
 
 def load_tokens(filename):
     npt = np.load(filename)
     npt = npt.astype(np.int32)
     ptt = torch.tensor(npt, dtype=torch.long)
 
+    return ptt
+
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes, split, master_process=True):
+    def __init__(self, B, T, process_rank, num_processes, split, data_root, master_process=True):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
         assert split in ['train', 'val']
 
-        data_root = "edu_fineweb10B"
+        # data_root = "edu_fineweb10B"
+        data_root = os.path.join(pathlib.Path(__file__).parent.resolve(), data_root)
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)
@@ -26,6 +30,7 @@ class DataLoaderLite:
 
         if master_process:
             print(f"running master process, found {len(shards)} shards for split {split}")
+        self.reset()
 
     def reset(self):
         self.current_shard = 0
