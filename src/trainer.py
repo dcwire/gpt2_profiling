@@ -1,5 +1,6 @@
 # not going to use ddp initially
 import torch
+import torch.nn.functional as F
 import tiktoken
 import math
 import time
@@ -117,6 +118,51 @@ def train_gpt():
         
         t1_epoch = time.time()
         dt_epoch = t1_epoch - t0_epoch
+        print("starting evaluation: ")
+
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_loss_accum = 0.0
+            val_loss_steps = 5
+            for _ in range(val_loss_steps):
+                x, y = val_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    logits, loss = model(x, y)
+                loss = loss / val_loss_steps
+                val_loss_accum += loss.detach()
+
+            print(f"validation loss: {val_loss_accum.item():.4f}")    
+
+        print("generating random tokens: ")
+
+        num_return_sequences = 4
+        max_length = 32
+        tokens = enc.encode("Hello, I'm a language model,")
+        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+        xgen = tokens.to(device)
+        sample_rng = torch.Generator(device=device)
+        sample_rng.manual_seed(42 + ddp_rank)
+        while xgen.size(1) < max_length:
+
+            with torch.no_grad():
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    logits, loss = model(xgen)
+                
+                logits = logits[:, -1, :]
+                probs = F.softmax(logits, dim=-1)
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+
+                ix = torch.multinomial(topk_probs, 1, generator=sample_rng)
+                xcol = torch.gather(topk_indices, -1, ix) 
+                xgen = torch.cat((xgen, xcol), dim=1)
+            
+        for i in range(num_return_sequences):
+            tokens = xgen[i, :max_length].tolist()
+            decoded = enc.decode(tokens) 
+            print(f"rank {ddp_rank} sample {i}: {decoded}")
 
         print(f"finishing epoch {epoch} | time: {dt_epoch:.2f}s")
                 
