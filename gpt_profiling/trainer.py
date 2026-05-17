@@ -5,6 +5,7 @@ import tiktoken
 import math
 import time
 import os
+import pathlib
 
 from .data.dataloader import DataLoaderLite
 from .model.gpt_model import GPT
@@ -51,8 +52,31 @@ def train_gpt(checkpoint_path=None):
 
     model = GPT(GPTConfig()) # TODO: Modify vocab to 50304 to make it a multiple of 32/64/128
     
+    max_epoch = -1
     if (checkpoint_path is not None):
-        model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
+        path = os.path.join(pathlib.Path(__file__).parent.resolve(), checkpoint_path)
+        if (os.path.exists(path)):
+            # Find model with highest epoch
+            files = os.listdir(path)
+            
+            for file in files:
+                if "gpt2_epoch" in file:
+                    try:
+                        epoch_num = int(file.split("gpt2_epoch_")[1].split('.')[0])
+                        if (max_epoch == -1):
+                            max_epoch = epoch_num
+                        else:
+                            max_epoch = max(max_epoch, epoch_num)
+                    except Exception as e:
+                        print(f"An exception occurred while loading model weights: {e}")
+            if max_epoch != -1:
+                model.load_state_dict(torch.load(os.path.join(path, f"gpt2_epoch_{max_epoch}.pth"), weights_only=True))
+            else:
+                print("unable to get the proper file for loading weights")
+        else:
+            print(f"checkpoint path not found at {path}. creating new path")
+            os.makedirs(path, exist_ok=True)
+    
 
     model.to(device)
 
@@ -123,10 +147,22 @@ def train_gpt(checkpoint_path=None):
         
         t1_epoch = time.time()
         dt_epoch = t1_epoch - t0_epoch
-        
-        
-        os.makedirs("checkpoints", exist_ok=True)
-        torch.save(model.state_dict(), os.path.join("checkpoints", f"gpt2_epoch_{epoch}"))
+
+        if checkpoint_path is not None:
+            
+            if max_epoch == -1:
+                max_epoch = 0
+            else:
+                max_epoch += 1
+
+            path = os.path.join(pathlib.Path(__file__).parent.resolve(), checkpoint_path)
+            os.makedirs(path, exist_ok=True)
+
+            try:
+                torch.save(model.state_dict(), os.path.join(path, f"gpt2_epoch_{max_epoch}.pth"))
+            except Exception as e:
+                print(f"couldn't save model for epoch {max_epoch}: {e}")
+
 
         print("starting evaluation: ")
 
