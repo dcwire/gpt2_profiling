@@ -4,12 +4,13 @@ import torch.nn.functional as F
 import tiktoken
 import math
 import time
+import os
 
 from .data.dataloader import DataLoaderLite
 from .model.gpt_model import GPT
 from .model.config import GPTConfig
 
-def train_gpt():
+def train_gpt(checkpoint_path=None):
     ddp_rank = 0
     ddp_local_rank = 0
     ddp_world_size = 1
@@ -49,6 +50,10 @@ def train_gpt():
     torch.set_float32_matmul_precision("high")
 
     model = GPT(GPTConfig()) # TODO: Modify vocab to 50304 to make it a multiple of 32/64/128
+    
+    if (checkpoint_path is not None):
+        model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
+
     model.to(device)
 
     max_lr = 6e-4 
@@ -118,6 +123,11 @@ def train_gpt():
         
         t1_epoch = time.time()
         dt_epoch = t1_epoch - t0_epoch
+        
+        
+        os.makedirs("checkpoints", exist_ok=True)
+        torch.save(model.state_dict(), os.path.join("checkpoints", f"gpt2_epoch_{epoch}"))
+
         print("starting evaluation: ")
 
         model.eval()
@@ -158,7 +168,7 @@ def train_gpt():
                 ix = torch.multinomial(topk_probs, 1, generator=sample_rng)
                 xcol = torch.gather(topk_indices, -1, ix) 
                 xgen = torch.cat((xgen, xcol), dim=1)
-            
+        
         for i in range(num_return_sequences):
             tokens = xgen[i, :max_length].tolist()
             decoded = enc.decode(tokens) 
