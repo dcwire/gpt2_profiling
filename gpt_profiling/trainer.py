@@ -4,14 +4,23 @@ import torch.nn.functional as F
 import tiktoken
 import math
 import time
+import wandb
 import os
 import pathlib
+from dotenv import load_dotenv
 
 from .data.dataloader import DataLoaderLite
 from .model.gpt_model import GPT
 from .model.config import GPTConfig
 
+env_path = os.path.join(pathlib.Path(__file__).parent.parent.resolve(), ".env")
+if not os.path.exists(env_path):
+    print("can't find .env file")
+else:
+    load_dotenv(env_path)
+
 def train_gpt(checkpoint_path=None):
+    
     ddp_rank = 0
     ddp_local_rank = 0
     ddp_world_size = 1
@@ -50,7 +59,8 @@ def train_gpt(checkpoint_path=None):
 
     torch.set_float32_matmul_precision("high")
 
-    model = GPT(GPTConfig()) # TODO: Modify vocab to 50304 to make it a multiple of 32/64/128
+    gpt_config = GPTConfig()
+    model = GPT(gpt_config) # TODO: Modify vocab to 50304 to make it a multiple of 32/64/128
     
     max_epoch = -1
     if (checkpoint_path is not None):
@@ -85,7 +95,7 @@ def train_gpt(checkpoint_path=None):
     warmup_steps = 2
     max_steps = 37 # Depends on the dataset + batch size... TODO
     num_epochs = 10
-
+    
     def get_lr(it):
 
         if it < warmup_steps:
@@ -100,6 +110,35 @@ def train_gpt(checkpoint_path=None):
 
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
         return min_lr + coeff * (max_lr - min_lr)
+
+    run_wandb = wandb.init(
+        project=os.environ["PROJECT"],
+        entity=os.environ["ENTITY"],
+        name=f"run_{max_epoch}",
+        config={
+            "dataset": dataset,
+            "device": device,
+            "batch_size": B,
+            "sequence_length": T,
+            "total_batch_size": total_batch_size,
+            "max_lr": max_lr,
+            "min_lr": min_lr, 
+            "warmup_steps": warmup_steps,
+            "max_steps": max_steps,
+            "num_epochs": num_epochs,
+            "max_epoch": max_epoch,
+            "model_name": "gpt_2",
+            "model_config": {
+                "vocab_size": gpt_config.vocab_size,
+                "block_size": gpt_config.block_size,
+                "n_layer": gpt_config.n_layer,
+                "n_head": gpt_config.n_head,
+                "n_embd": gpt_config.n_embd,
+                "dropout": gpt_config.dropout,
+                "bias": gpt_config.bias
+            }
+        }
+    )
 
     # TODO: Logging, optimizer
     optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type)

@@ -3,3 +3,5 @@ uv.lock
 **/__pycache__/**
 **/tinyshakespeare
 checkpoints
+.env
+wandb
