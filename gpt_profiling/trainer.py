@@ -8,18 +8,20 @@ import wandb
 import os
 import pathlib
 from dotenv import load_dotenv
+from torch.profiler import profile, tensorboard_trace_handler, schedule, ProfilerActivity
 
-from .data.dataloader import DataLoaderLite
-from .model.gpt_model import GPT
-from .model.config import GPTConfig
+from data.dataloader import DataLoaderLite
+from model.gpt_model import GPT
+from model.config import GPTConfig
 
-env_path = os.path.join(pathlib.Path(__file__).parent.parent.resolve(), ".env")
+parent_path = pathlib.Path(__file__).parent
+env_path = os.path.join(parent_path.parent.resolve(), ".env")
 if not os.path.exists(env_path):
     print("can't find .env file")
 else:
     load_dotenv(env_path)
 
-def train_gpt(checkpoint_path=None):
+def train_gpt(checkpoint_path=None, profile_run=False):
     
     ddp_rank = 0
     ddp_local_rank = 0
@@ -64,38 +66,45 @@ def train_gpt(checkpoint_path=None):
     
     max_epoch = -1
     if (checkpoint_path is not None):
-        path = os.path.join(pathlib.Path(__file__).parent.resolve(), checkpoint_path)
-        if (os.path.exists(path)):
-            # Find model with highest epoch
-            files = os.listdir(path)
-            
-            for file in files:
-                if "gpt2_epoch" in file:
-                    try:
-                        epoch_num = int(file.split("gpt2_epoch_")[1].split('.')[0])
-                        if (max_epoch == -1):
-                            max_epoch = epoch_num
-                        else:
-                            max_epoch = max(max_epoch, epoch_num)
-                    except Exception as e:
-                        print(f"An exception occurred while loading model weights: {e}")
-            if max_epoch != -1:
-                model.load_state_dict(torch.load(os.path.join(path, f"gpt2_epoch_{max_epoch}.pth"), weights_only=True))
+        try:
+            path = os.path.join(parent_path.resolve(), checkpoint_path)
+            if (os.path.exists(path)):
+                # Find model with highest epoch
+                files = os.listdir(path)
+                
+                for file in files:
+                    if "gpt2_epoch" in file:
+                        try:
+                            epoch_num = int(file.split("gpt2_epoch_")[1].split('.')[0])
+                            if (max_epoch == -1):
+                                max_epoch = epoch_num
+                            else:
+                                max_epoch = max(max_epoch, epoch_num)
+                        except Exception as e:
+                            raise Exception(f"An exception occurred while loading model weights: {e}")
+                if max_epoch != -1:
+                    model.load_state_dict(torch.load(os.path.join(path, f"gpt2_epoch_{max_epoch}.pth"), weights_only=True))
+                else:
+                    print("unable to get the proper file for loading weights")
             else:
-                print("unable to get the proper file for loading weights")
-        else:
-            print(f"checkpoint path not found at {path}. creating new path")
-            os.makedirs(path, exist_ok=True)
+                print(f"checkpoint path not found at {path}. creating new path")
+                os.makedirs(path, exist_ok=True)
+        except Exception as e:
+            print("an exception occurred when loading model, starting with max_epoch 0: ", e)
     
+    if (max_epoch < 0):
+        max_epoch = 0
 
     model.to(device)
-
-    max_lr = 6e-4 
-    min_lr = max_lr * 0.1
-    warmup_steps = 2
-    max_steps = 37 # Depends on the dataset + batch size... TODO
-    num_epochs = 10
     
+    max_lr = 6e-4 
+    min_lr = max_lr * 0.01
+    warmup_steps = 2
+    max_steps = 200 # Depends on the dataset + batch size... TODO
+    steps_per_epoch = 20
+    num_epochs = 5
+    global_steps = max_epoch * max_steps
+
     def get_lr(it):
 
         if it < warmup_steps:
@@ -125,6 +134,7 @@ def train_gpt(checkpoint_path=None):
             "min_lr": min_lr, 
             "warmup_steps": warmup_steps,
             "max_steps": max_steps,
+            "steps_per_epoch": steps_per_epoch,
             "num_epochs": num_epochs,
             "max_epoch": max_epoch,
             "model_name": "gpt_2",
@@ -140,14 +150,37 @@ def train_gpt(checkpoint_path=None):
         }
     )
 
+    if profile_run:
+        logs_path = os.path.join(parent_path.parent.resolve(), "logs")
+        if (not os.path.exists(logs_path)):
+            os.makedirs(logs_path)
+
+        prof_schedule = schedule(
+            wait=2,
+            warmup=2,
+            active=6,
+            repeat=1
+        )
+
+        prof = profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=prof_schedule,
+            on_trace_ready=tensorboard_trace_handler(os.path.join(logs_path, "profiler_logs")),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+            with_flops=False
+        )
+
+        prof.start()
     # TODO: Logging, optimizer
     optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type)
+
     for epoch in range(num_epochs):
         t0_epoch = time.time()
         print(f"starting epoch {epoch}")
-        for step in range(max_steps):
+        for step in range(steps_per_epoch):
             t0 = time.time()
-            last_step = (step == max_steps - 1)
 
             model.train()
             optimizer.zero_grad()
@@ -166,7 +199,8 @@ def train_gpt(checkpoint_path=None):
             
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-            lr = get_lr(step)
+            lr = get_lr(global_steps)
+            global_steps += 1
 
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
@@ -183,6 +217,9 @@ def train_gpt(checkpoint_path=None):
 
             if master_process:
                 print(f"step {step:5d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec: .2f}")
+
+            if profile_run:
+                prof.step()
         
         t1_epoch = time.time()
         dt_epoch = t1_epoch - t0_epoch
@@ -194,7 +231,7 @@ def train_gpt(checkpoint_path=None):
             else:
                 max_epoch += 1
 
-            path = os.path.join(pathlib.Path(__file__).parent.resolve(), checkpoint_path)
+            path = os.path.join(parent_path.resolve(), checkpoint_path)
             os.makedirs(path, exist_ok=True)
 
             try:
@@ -251,5 +288,9 @@ def train_gpt(checkpoint_path=None):
 
         print(f"finishing epoch {epoch} | time: {dt_epoch:.2f}s")
                 
+    run_wandb.finish()
 
+    
 
+if __name__ == "__main__":
+    train_gpt(checkpoint_path=os.path.join(parent_path.resolve(), "checkpoints"))

@@ -5,3 +5,4 @@ uv.lock
 checkpoints
 .env
 wandb
+logs
